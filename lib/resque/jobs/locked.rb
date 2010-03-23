@@ -1,13 +1,12 @@
 module Resque
   module Jobs
     # If you want only one instance of your job running at a time,
-    # inherit rom this class and define a `perform_without_lock`
-    # method (as opposed to `perform`) at the class level.
+    # inherit from this class.
     #
     # For example:
     #
     # class UpdateNetworkGraph < Resque::Jobs::Locked
-    #   def self.perform_without_lock(repo_id)
+    #   def self.perform(repo_id)
     #     heavy_lifting
     #   end
     # end
@@ -26,7 +25,7 @@ module Resque
     #     "network-graph"
     #   end
     #
-    #   def self.perform_without_lock(repo_id)
+    #   def self.perform(repo_id)
     #     heavy_lifting
     #   end
     # end
@@ -37,8 +36,8 @@ module Resque
     # class name and arguments.
     class Locked
       # Override in your subclass to control the lock key. It is
-      # passed the same arguments as `perform_without_lock`, that is,
-      # your job's payload.
+      # passed the same arguments as `perform`, that is, your job's
+      # payload.
       def self.lock(*args)
         "locked:#{name}-#{args.to_s}"
       end
@@ -48,15 +47,8 @@ module Resque
         Resque.redis.exist(lock)
       end
 
-      # Do not override - this is where the magic happens. Instead
-      # provide your own `perform_without_lock` class level method.
-      def self.perform(*args)
-        with_lock do
-          perform_without_lock(*args)
-        end
-      end
-
-      def self.with_lock
+      # Where the magic happens.
+      def self.around_perform(*args)
         # Abort if another job has created a lock.
         return unless Resque.redis.setnx(lock, true)
 
