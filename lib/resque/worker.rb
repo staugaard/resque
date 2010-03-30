@@ -267,11 +267,22 @@ module Resque
       log! "Registered signals"
     end
 
+    def signal_child(signal)
+      if @child && system("ps -o pid,state -p #{@child}")
+        log! "Sending #{signal} to child at #{@child}"
+        Process.kill(signal, @child) rescue nil
+        true
+      else
+        false
+      end
+    end
+
     # Schedule this worker for shutdown. Will finish processing the
     # current job.
     def shutdown
       log 'Exiting...'
       @shutdown = true
+      signal_child('QUIT')
     end
 
     # Kill the child and shutdown immediately.
@@ -283,15 +294,7 @@ module Resque
     # Kills the forked child immediately, without remorse. The job it
     # is processing will not be completed.
     def kill_child
-      if @child
-        log! "Killing child at #{@child}"
-        if system("ps -o pid,state -p #{@child}")
-          Process.kill("KILL", @child) rescue nil
-        else
-          log! "Child #{@child} not found, restarting."
-          shutdown
-        end
-      end
+      shutdown unless signal_child('KILL')
     end
 
     # Stop processing jobs after the current one has completed (if we're
@@ -299,12 +302,14 @@ module Resque
     def pause_processing
       log "USR2 received; pausing job processing"
       @paused = true
+      signal_child('USR2')
     end
 
     # Start processing jobs again after a pause
     def unpause_processing
       log "CONT received; resuming job processing"
       @paused = false
+      signal_child('CONT')
     end
 
     # Looks for any workers which should be running on this server
