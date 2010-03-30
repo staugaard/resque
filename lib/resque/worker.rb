@@ -22,6 +22,8 @@ module Resque
 
     attr_writer :to_s
 
+    attr_accessor :jobs_per_fork
+
     # Returns an array of all worker objects.
     def self.all
       redis.smembers(:workers).map { |id| find(id) }
@@ -73,6 +75,7 @@ module Resque
     # in alphabetical order. Queues can be dynamically added or
     # removed without needing to restart workers using this method.
     def initialize(*queues)
+      @jobs_per_fork = 1
       @queues = queues
       validate_queues
     end
@@ -111,25 +114,20 @@ module Resque
         break if @shutdown
 
         if not @paused and job = reserve
-          log "got: #{job.inspect}"
           run_hook :before_fork
 
-          if @child = fork
+          if @child = fork { child_work(job, interval.to_i, &block) }
             rand # Reseeding
             procline "Forked #{@child} at #{Time.now.to_i}"
             Process.wait
           else
-            procline "Processing #{job.queue} since #{Time.now.to_i}"
             process(job, &block)
             exit! unless @cant_fork
           end
 
           @child = nil
         else
-          break if interval.to_i == 0
-          log! "Sleeping for #{interval.to_i}"
-          procline @paused ? "Paused" : "Waiting for #{@queues.join(',')}"
-          sleep interval.to_i
+          break unless wait_for_work(interval.to_i)
         end
       end
 
@@ -137,13 +135,41 @@ module Resque
       unregister_worker
     end
 
+    def child_work(first_job, interval, &block)
+      @jobs_processed = 0
+      job = first_job
+
+      run_hook :after_fork, job
+
+      while !@shutdown && !@paused && @jobs_processed < jobs_per_fork do
+        if job ||= reserve
+          process(job, &block)
+          job = nil
+        else
+          wait_for_work(interval)
+        end
+      end
+
+      run_hook :before_child_exit
+      exit!
+    end
+
+    def wait_for_work(interval)
+      return false if interval == 0
+      log! "Sleeping for #{interval}"
+      procline @paused ? "Paused" : "Waiting for #{@queues.join(',')}"
+      sleep interval
+      true
+    end
+
     # Processes a single job. If none is given, it will try to produce
     # one.
     def process(job = nil)
       return unless job ||= reserve
 
+      procline "Processing #{job.queue} since #{Time.now.to_i}"
+
       begin
-        run_hook :after_fork, job
         working_on job
         job.perform
       rescue Object => e
@@ -165,6 +191,7 @@ module Resque
         log! "Checking #{queue}"
         if job = Resque::Job.reserve(queue)
           log! "Found job on #{queue}"
+          log "got: #{job.inspect}"
           return job
         end
       end
@@ -181,7 +208,7 @@ module Resque
 
     # Not every platform supports fork. Here we do our magic to
     # determine if yours does.
-    def fork
+    def fork(&block)
       @cant_fork = true if $TESTING
 
       return if @cant_fork
@@ -189,7 +216,7 @@ module Resque
       begin
         # IronRuby doesn't support `Kernel.fork` yet
         if Kernel.respond_to?(:fork)
-          Kernel.fork
+          Kernel.fork(&block)
         else
           raise NotImplementedError
         end
@@ -343,6 +370,8 @@ module Resque
     # Called when we are done working - clears our `working_on` state
     # and tells Redis we processed a job.
     def done_working
+      @jobs_processed ||= 0
+      @jobs_processed += 1
       processed!
       redis.del("worker:#{self}")
     end

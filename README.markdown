@@ -336,6 +336,15 @@ complicated.
 
 Workers instead handle their own state.
 
+If you have a very high number of very small/fast jobs, the overhead of
+forking and executing your after_fork hook might get too big. In this
+case you can have each fork process a specified number of jobs before
+terminating.
+
+You can specify the number of to process per fork using the JOBS\_PER\_FORK
+variable:
+
+    $ QUEUE=* JOBS_PER_FORK=100 rake resque:work
 
 ### Parents and Children
 
@@ -682,6 +691,15 @@ And after forking:
 The `after_fork` hook will be run in the child process and is passed
 the current job. Any changes you make, therefor, will only live as
 long as the job currently being processes.
+
+And before terminating a fork:
+
+    Resque.before_child_exit do
+      puts "CALL ME BEFORE YOU DIE"
+    end
+
+The `before_child_exit` hook will be run in the child process just before
+the child process terminates.
 
 All hooks can also be set using a setter, e.g.
 

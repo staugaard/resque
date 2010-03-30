@@ -1,5 +1,11 @@
 require File.dirname(__FILE__) + '/test_helper'
 
+class Resque::Worker
+  def exit!
+    true
+  end
+end
+
 context "Resque::Worker" do
   setup do
     Resque.redis.flush_all
@@ -7,6 +13,7 @@ context "Resque::Worker" do
     Resque.before_first_fork = nil
     Resque.before_fork = nil
     Resque.after_fork = nil
+    Resque.before_child_exit = nil
 
     @worker = Resque::Worker.new(:jobs)
     Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
@@ -289,7 +296,73 @@ context "Resque::Worker" do
 
     assert !$AFTER_FORK_CALLED
     Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
-    workerA.work(0)
+    workerA.child_work(workerA.reserve, 0)
     assert $AFTER_FORK_CALLED
+  end
+
+  test "Will only call an after_fork hook before the first job proccessed by the fork" do
+    Resque.redis.flush_all
+
+    $SEQUENCE = []
+
+    Resque.after_fork = Proc.new { $SEQUENCE << :after_fork }
+
+    worker = Resque::Worker.new(:jobs)
+    worker.jobs_per_fork = 2
+
+    Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
+    Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
+    Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
+    Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
+
+    worker.child_work(worker.reserve, 0) do
+      $SEQUENCE << :work
+    end
+
+    assert($SEQUENCE.size > 1)
+    assert_equal(:after_fork, $SEQUENCE.first)
+  end
+
+  test "Will call a before_child_exit right before a child terminates" do
+    Resque.redis.flush_all
+
+    $SEQUENCE = []
+
+    Resque.before_child_exit = Proc.new { $SEQUENCE << :before_child_exit }
+
+    worker = Resque::Worker.new(:jobs)
+    worker.jobs_per_fork = 2
+
+    Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
+    Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
+    Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
+    Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
+
+    worker.child_work(worker.reserve, 0) do
+      $SEQUENCE << :work
+    end
+
+    assert($SEQUENCE.size > 1)
+    assert_equal(:before_child_exit, $SEQUENCE.last)
+  end
+
+  test "each fork processes the specified number of jobs" do
+    Resque.redis.flush_all
+
+    $PROCESSED_JOBS = 0
+
+    worker = Resque::Worker.new(:jobs)
+    worker.jobs_per_fork = 2
+
+    Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
+    Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
+    Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
+
+    worker.child_work(worker.reserve, 0) do
+      $PROCESSED_JOBS += 1
+    end
+
+    assert_equal(2, $PROCESSED_JOBS)
+    assert_equal(1, Resque.size(:jobs))
   end
 end

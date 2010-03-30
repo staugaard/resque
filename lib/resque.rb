@@ -95,6 +95,20 @@ module Resque
     @after_fork = after_fork
   end
 
+  # the `before_child_exit` hook will run in the child process
+  # right before the child process terminates
+  #
+  # Call with a block to set the hook.
+  # Call with no arguments to return the hook.
+  def before_child_exit(&block)
+    block ? (@before_child_exit = block) : @before_child_exit
+  end
+
+  # Set the before_child_exit proc.
+  def before_child_exit=(before_child_exit)
+    @before_child_exit = before_child_exit
+  end
+
   def to_s
     "Resque Client connected to #{redis.server}"
   end
